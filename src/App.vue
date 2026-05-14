@@ -378,21 +378,24 @@ async function handleSend() {
   })
   scrollToBottom()
 
-  // 添加 AI 消息占位
-  const aiMsg = {
+  // 添加 AI 消息占位，push 后必须通过 messages.value 末尾的响应式 Proxy 来操作
+  // 不能直接用本地变量 aiMsg，否则 Vue 追踪不到属性变更，界面不会实时更新
+  messages.value.push({
     role: 'assistant',
     content: '',
     streaming: true,
     routeInfo: null,
     timestamp: new Date().toISOString()
-  }
-  messages.value.push(aiMsg)
+  })
   isStreaming.value = true
   scrollToBottom()
 
+  // 通过 getter 函数始终拿到响应式 Proxy 对象
+  const getAiMsg = () => messages.value[messages.value.length - 1]
+
   currentController = sendMessage(text, autoRoute.value, {
     onRoute(data) {
-      aiMsg.routeInfo = data
+      getAiMsg().routeInfo = data
       // 同步更新 activeAgent
       const matched = agents.value.find(a => a.name === data.agent_name)
       if (matched) {
@@ -401,18 +404,18 @@ async function handleSend() {
       }
     },
     onMessage(content) {
-      aiMsg.content += content
+      getAiMsg().content += content
       scrollToBottom(false)
     },
     onDone() {
-      aiMsg.streaming = false
+      getAiMsg().streaming = false
       isStreaming.value = false
       currentController = null
       scrollToBottom()
     },
     onError(err) {
-      aiMsg.streaming = false
-      aiMsg.content = aiMsg.content || ''
+      const msg = getAiMsg()
+      msg.streaming = false
       // 追加错误提示
       messages.value.push({
         role: 'error',
@@ -429,14 +432,18 @@ async function handleSend() {
 // ===== 生命周期 =====
 onMounted(async () => {
   await loadAgents()
-  // 尝试加载历史记录
+  // 仅在消息列表为空时才加载历史，防止热更新或重复挂载时重复追加
+  if (messages.value.length > 0) return
   try {
     const data = await fetchHistory()
-    const history = (data.history || []).filter(h => h.role !== 'tool')
+    // 过滤掉 tool 角色，只展示 user 和 assistant
+    const history = (data.history || []).filter(h => h.role === 'user' || h.role === 'assistant')
     if (history.length > 0) {
       messages.value = history.map(h => ({
         role: h.role,
         content: h.content,
+        streaming: false,
+        routeInfo: null,
         timestamp: h.timestamp
       }))
       scrollToBottom(false)

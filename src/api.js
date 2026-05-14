@@ -83,6 +83,7 @@ export function sendMessage(message, autoRoute = true, callbacks = {}) {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let eventType = ''  // 提升到 while 外，跨 chunk 持久化
 
       while (true) {
         const { done, value } = await reader.read()
@@ -92,9 +93,11 @@ export function sendMessage(message, autoRoute = true, callbacks = {}) {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
-        let eventType = ''
         for (const line of lines) {
-          if (line.startsWith('event: ')) {
+          if (line === '') {
+            // 空行是 SSE 事件块的分隔符，重置 eventType
+            eventType = ''
+          } else if (line.startsWith('event: ')) {
             eventType = line.slice(7).trim()
           } else if (line.startsWith('data: ')) {
             try {
