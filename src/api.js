@@ -1,75 +1,119 @@
 const BASE_URL = 'http://localhost:8088'
 
-/**
- * 获取可用 Agent 列表
- */
-export async function fetchAgents() {
-  const res = await fetch(`${BASE_URL}/api/agents`)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+// ===== Token 管理 =====
+export function getToken() {
+  return localStorage.getItem('agently_token') || ''
+}
+export function setToken(token) {
+  localStorage.setItem('agently_token', token)
+}
+export function removeToken() {
+  localStorage.removeItem('agently_token')
+}
+export function getStoredUser() {
+  try {
+    return JSON.parse(localStorage.getItem('agently_user') || 'null')
+  } catch { return null }
+}
+export function setStoredUser(user) {
+  localStorage.setItem('agently_user', JSON.stringify(user))
+}
+export function removeStoredUser() {
+  localStorage.removeItem('agently_user')
 }
 
-/**
- * 切换当前激活的 Agent
- * @param {string} agentId
- */
-export async function switchAgent(agentId) {
-  const res = await fetch(`${BASE_URL}/api/switch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent_id: agentId })
+// ===== 通用请求工具 =====
+function authHeaders() {
+  const token = getToken()
+  return token ? { 'Authorization': `Bearer ${token}` } : {}
+}
+
+async function request(url, options = {}) {
+  const res = await fetch(`${BASE_URL}${url}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(options.headers || {})
+    }
   })
-  const data = await res.json()
+  const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }))
   if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`)
   return data
 }
 
+// ===== 用户认证 =====
+
 /**
- * 获取当前 Agent 的对话历史
+ * 用户注册
  */
-export async function fetchHistory() {
-  const res = await fetch(`${BASE_URL}/api/history`)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+export async function register({ username, email, password, nickname = '' }) {
+  return request('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, email, password, nickname })
+  })
 }
 
 /**
- * 清空当前 Agent 的对话历史
+ * 用户登录（支持用户名或邮箱）
  */
-export async function clearHistory() {
-  const res = await fetch(`${BASE_URL}/api/history`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+export async function login({ username, password }) {
+  return request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password })
+  })
+}
+
+// ===== 会话管理 =====
+
+/**
+ * 查询会话列表
+ */
+export async function fetchSessions({ agentId = '', limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams({ limit, offset })
+  if (agentId) params.set('agent_id', agentId)
+  return request(`/api/sessions?${params}`)
 }
 
 /**
- * 获取当前 Agent 的工具列表
+ * 创建新会话
  */
-export async function fetchTools() {
-  const res = await fetch(`${BASE_URL}/api/tools`)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+export async function createSession({ agentId, title = '' }) {
+  return request('/api/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ agent_id: agentId, title })
+  })
 }
 
 /**
- * 发送消息并通过 SSE 流式接收回答
- * @param {string} message - 用户消息
- * @param {boolean} autoRoute - 是否自动路由
- * @param {object} callbacks - 回调函数集合
- * @param {function} callbacks.onRoute - 路由事件回调 (data) => void
- * @param {function} callbacks.onMessage - 消息片段回调 (content) => void
- * @param {function} callbacks.onDone - 完成回调 () => void
- * @param {function} callbacks.onError - 错误回调 (error) => void
- * @returns {AbortController} - 可用于取消请求
+ * 查询会话消息历史
  */
-export function sendMessage(message, autoRoute = true, callbacks = {}) {
+export async function fetchSessionMessages(sessionId, { limit = 100, offset = 0 } = {}) {
+  const params = new URLSearchParams({ limit, offset })
+  return request(`/api/sessions/${sessionId}/messages?${params}`)
+}
+
+/**
+ * 归档会话（软删除）
+ */
+export async function archiveSession(sessionId) {
+  return request(`/api/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
+/**
+ * 在指定会话中发送消息（SSE 流式，持久化）
+ */
+export function sendSessionMessage(sessionId, message, autoRoute = true, callbacks = {}) {
   const controller = new AbortController()
 
   ;(async () => {
     try {
-      const response = await fetch(`${BASE_URL}/api/chat`, {
+      const response = await fetch(`${BASE_URL}/api/sessions/${sessionId}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
         body: JSON.stringify({ message, auto_route: autoRoute }),
         signal: controller.signal
       })
@@ -80,48 +124,7 @@ export function sendMessage(message, autoRoute = true, callbacks = {}) {
         return
       }
 
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let eventType = ''  // 提升到 while 外，跨 chunk 持久化
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (line === '') {
-            // 空行是 SSE 事件块的分隔符，重置 eventType
-            eventType = ''
-          } else if (line.startsWith('event: ')) {
-            eventType = line.slice(7).trim()
-          } else if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6))
-              switch (eventType) {
-                case 'route':
-                  callbacks.onRoute?.(data)
-                  break
-                case 'message':
-                  callbacks.onMessage?.(data.content)
-                  break
-                case 'done':
-                  callbacks.onDone?.()
-                  break
-                case 'error':
-                  callbacks.onError?.(data.error || '未知错误')
-                  break
-              }
-            } catch {
-              // 忽略 JSON 解析错误
-            }
-          }
-        }
-      }
+      await consumeSSE(response, callbacks)
     } catch (err) {
       if (err.name !== 'AbortError') {
         callbacks.onError?.(err.message || '网络连接失败')
@@ -130,4 +133,60 @@ export function sendMessage(message, autoRoute = true, callbacks = {}) {
   })()
 
   return controller
+}
+
+// ===== Agent 管理（需要 JWT） =====
+
+export async function fetchAgents() {
+  return request('/api/agents')
+}
+
+export async function switchAgent(agentId) {
+  return request('/api/switch', {
+    method: 'POST',
+    body: JSON.stringify({ agent_id: agentId })
+  })
+}
+
+// ===== 工具列表（需要 JWT） =====
+
+export async function fetchTools() {
+  return request('/api/tools')
+}
+
+// ===== SSE 公共解析器 =====
+async function consumeSSE(response, callbacks) {
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventType = ''  // 跨 chunk 持久化，空行时重置
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line === '') {
+        eventType = ''
+      } else if (line.startsWith('event: ')) {
+        eventType = line.slice(7).trim()
+      } else if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          switch (eventType) {
+            case 'route':   callbacks.onRoute?.(data); break
+            case 'message': callbacks.onMessage?.(data.content); break
+            case 'done':    callbacks.onDone?.(); break
+            case 'error':   callbacks.onError?.(data.error || '未知错误'); break
+          }
+        } catch {
+          // 忽略 JSON 解析错误
+        }
+      }
+    }
+  }
 }
