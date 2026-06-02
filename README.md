@@ -1,6 +1,6 @@
 # Agently Vue
 
-基于 Vue 3 + Vite 构建的多 Agent 智能问答前端界面，对接 Agent-Hwan 后端服务（`http://localhost:8088`）。
+基于 Vue 3 + Vite 构建的多 Agent 智能问答前端界面，对接 Agent-Hwan 后端服务（`http://localhost:8081`）。
 
 支持**用户注册/登录**、**持久化会话管理**、流式对话、多 Agent 切换、自动意图路由等功能。
 
@@ -109,7 +109,7 @@
 ```
 agently-vue/
 ├── index.html                    # HTML 入口
-├── vite.config.js                # Vite 配置（含 /api 代理到 8088）
+├── vite.config.js                # Vite 配置（含 /api 代理到 8081）
 ├── package.json
 ├── API_DOC.yaml                  # 后端接口文档（OpenAPI 3.0）
 ├── public/
@@ -134,7 +134,7 @@ agently-vue/
 ### 前置条件
 
 - Node.js >= 18
-- 后端服务 Agent-Hwan 已在本地运行（`http://localhost:8088`）
+- 后端服务 Agent-Hwan 已在本地运行（`http://localhost:8081`）
 
 ### 安装依赖
 
@@ -150,7 +150,7 @@ npm run dev
 
 浏览器访问 **http://localhost:5173**
 
-> Vite 已配置 `/api` 路径代理到 `http://localhost:8088`，无需额外处理跨域。
+> Vite 已配置 `/api` 路径代理到 `http://localhost:8081`，无需额外处理跨域。
 
 ### 构建生产版本
 

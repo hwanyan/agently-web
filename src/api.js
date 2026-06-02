@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:8088'
+const BASE_URL = 'http://localhost:8081'
 
 // ===== Token 管理 =====
 export function getToken() {
