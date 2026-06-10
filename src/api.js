@@ -45,12 +45,24 @@ async function request(url, options = {}) {
 // ===== 用户认证 =====
 
 /**
- * 用户注册
+ * 发送邮箱验证码
+ * @param {string} email - 目标邮箱
+ * @param {string} purpose - 用途：register（注册）/ reset_password（重置密码）
  */
-export async function register({ username, email, password, nickname = '' }) {
+export async function sendCode({ email, purpose = 'register' }) {
+  return request('/api/auth/send-code', {
+    method: 'POST',
+    body: JSON.stringify({ email, purpose })
+  })
+}
+
+/**
+ * 用户注册（需先通过 sendCode 获取验证码）
+ */
+export async function register({ username, email, password, verify_code, nickname = '' }) {
   return request('/api/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ username, email, password, nickname })
+    body: JSON.stringify({ username, email, password, verify_code, nickname })
   })
 }
 

@@ -38,6 +38,31 @@
               />
               <span v-if="errors.email" class="field-error">{{ errors.email }}</span>
             </div>
+            <div class="field-group">
+              <label class="field-label">邮箱验证码</label>
+              <div class="code-row">
+                <input
+                  v-model="form.verifyCode"
+                  class="field-input code-input"
+                  :class="{ error: errors.verifyCode }"
+                  type="text"
+                  maxlength="6"
+                  placeholder="6 位数字验证码"
+                  autocomplete="one-time-code"
+                />
+                <button
+                  type="button"
+                  class="send-code-btn"
+                  :disabled="codeSending || codeCountdown > 0"
+                  @click="handleSendCode"
+                >
+                  <span v-if="codeSending" class="btn-spinner-sm"></span>
+                  <span v-else-if="codeCountdown > 0">{{ codeCountdown }}s</span>
+                  <span v-else>发送验证码</span>
+                </button>
+              </div>
+              <span v-if="errors.verifyCode" class="field-error">{{ errors.verifyCode }}</span>
+            </div>
           </template>
 
           <div class="field-group">
@@ -102,7 +127,7 @@
 
 <script setup>
 import { ref, reactive, watch } from 'vue'
-import { login, register, setToken, setStoredUser } from '../api.js'
+import { login, register, sendCode, setToken, setStoredUser } from '../api.js'
 
 const props = defineProps({
   visible: Boolean
@@ -114,8 +139,13 @@ const showPwd = ref(false)
 const loading = ref(false)
 const globalError = ref('')
 
-const form = reactive({ username: '', email: '', password: '', nickname: '' })
-const errors = reactive({ username: '', email: '', password: '' })
+const form = reactive({ username: '', email: '', password: '', nickname: '', verifyCode: '' })
+const errors = reactive({ username: '', email: '', password: '', verifyCode: '' })
+
+// 验证码相关
+const codeSending = ref(false)
+const codeCountdown = ref(0)
+let countdownTimer = null
 
 watch(() => props.visible, (v) => {
   if (v) resetForm()
@@ -126,11 +156,15 @@ function resetForm() {
   form.email = ''
   form.password = ''
   form.nickname = ''
+  form.verifyCode = ''
   errors.username = ''
   errors.email = ''
   errors.password = ''
+  errors.verifyCode = ''
   globalError.value = ''
   showPwd.value = false
+  codeCountdown.value = 0
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
 }
 
 function toggleMode() {
@@ -143,6 +177,7 @@ function validate() {
   errors.username = ''
   errors.email = ''
   errors.password = ''
+  errors.verifyCode = ''
 
   if (!form.username.trim()) {
     errors.username = '请输入用户名'
@@ -160,6 +195,13 @@ function validate() {
       errors.email = '邮箱格式不正确'
       ok = false
     }
+    if (!form.verifyCode.trim()) {
+      errors.verifyCode = '请输入验证码'
+      ok = false
+    } else if (!/^\d{6}$/.test(form.verifyCode.trim())) {
+      errors.verifyCode = '验证码为 6 位数字'
+      ok = false
+    }
   }
 
   if (!form.password) {
@@ -171,6 +213,36 @@ function validate() {
   }
 
   return ok
+}
+
+// 发送验证码
+async function handleSendCode() {
+  errors.email = ''
+  if (!form.email.trim()) {
+    errors.email = '请先输入邮箱'
+    return
+  }
+  if (!form.email.includes('@') || !form.email.includes('.')) {
+    errors.email = '邮箱格式不正确'
+    return
+  }
+  codeSending.value = true
+  try {
+    await sendCode({ email: form.email, purpose: 'register' })
+    // 开始 60 秒倒计时
+    codeCountdown.value = 60
+    countdownTimer = setInterval(() => {
+      codeCountdown.value--
+      if (codeCountdown.value <= 0) {
+        clearInterval(countdownTimer)
+        countdownTimer = null
+      }
+    }, 1000)
+  } catch (e) {
+    globalError.value = e.message || '验证码发送失败'
+  } finally {
+    codeSending.value = false
+  }
 }
 
 async function handleSubmit() {
@@ -186,6 +258,7 @@ async function handleSubmit() {
         username: form.username,
         email: form.email,
         password: form.password,
+        verify_code: form.verifyCode.trim(),
         nickname: form.nickname
       })
     }
@@ -350,6 +423,53 @@ async function handleSubmit() {
 .field-error {
   font-size: 11px;
   color: #f87171;
+}
+
+/* 验证码行 */
+.code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.code-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.send-code-btn {
+  flex-shrink: 0;
+  padding: 9px 14px;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--primary-light);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--transition);
+}
+
+.send-code-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.send-code-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(99, 102, 241, 0.3);
+  border-top-color: var(--primary-light);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
 
 .global-error {

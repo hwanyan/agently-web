@@ -55,7 +55,8 @@
 
 | 功能 | 说明 |
 |------|------|
-| **注册** | 用户名/邮箱/密码/昵称，注册成功直接返回 Token |
+| **注册** | 用户名/邮箱/密码/昵称 + 邮箱验证码，注册成功直接返回 Token |
+| **邮箱验证码** | 注册时需先发送验证码到邮箱，60 秒倒计时防重复发送 |
 | **登录** | 支持用户名或邮箱登录（含 `@` 自动识别为邮箱） |
 | **强制登录** | 未登录时可浏览主界面，实际使用功能（发送消息、选择 Agent、查看工具）时才弹出登录框 |
 | **登录后继续** | 登录成功后自动执行登录前用户想进行的操作 |
@@ -117,11 +118,11 @@ agently-vue/
 └── src/
     ├── main.js                   # Vue 应用入口
     ├── App.vue                   # 主界面（布局、状态管理、双模式切换）
-    ├── api.js                    # 后端接口封装（fetch + SSE + JWT）
+    ├── api.js                    # 后端接口封装（fetch + SSE + JWT + 验证码）
     ├── assets/
     │   └── main.css              # 全局样式（设计系统变量、Markdown 样式、动画）
     └── components/
-        ├── AuthModal.vue         # 登录/注册弹窗（表单校验、密码显示切换）
+        ├── AuthModal.vue         # 登录/注册弹窗（表单校验、邮箱验证码、密码显示切换）
         ├── SessionSidebar.vue    # 左侧会话列表侧边栏（登录后展示）
         ├── AgentPanel.vue        # Agent 选择面板（底部弹出）
         └── MessageBubble.vue     # 消息气泡（用户/AI/错误，含 Markdown 渲染）
@@ -160,6 +161,8 @@ npm run build
 
 产物输出到 `dist/` 目录。
 
+> **子路径部署说明**：项目通过 `vite.config.js` 中 `base: '/agently/'` 配置部署在子路径下。`index.html` 中的 favicon 使用相对路径 `./favicon.svg`，Vite 构建时会自动转换为 `/agently/favicon.svg`，确保 Tab 页图标正确显示为 Agently 自身图标而非根站点图标。
+
 ---
 
 ## 后端接口说明
@@ -170,7 +173,8 @@ npm run build
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/auth/register` | 用户注册，返回 JWT Token |
+| `POST` | `/api/auth/send-code` | 发送邮箱验证码（支持 `register` / `reset_password` 用途） |
+| `POST` | `/api/auth/register` | 用户注册（需携带邮箱验证码），返回 JWT Token |
 | `POST` | `/api/auth/login` | 用户登录（用户名或邮箱），返回 JWT Token |
 
 ### 会话管理（需要 JWT）
@@ -213,6 +217,11 @@ npm run build
 登录后
   └─ 加载 Agent 列表 → GET /api/agents
   └─ 加载会话列表 → GET /api/sessions
+
+注册流程
+  └─ 输入邮箱 → 点击「发送验证码」→ POST /api/auth/send-code
+  └─ 输入验证码 + 用户名/密码 → POST /api/auth/register
+  └─ 注册成功 → 获取 JWT Token → 自动登录
   └─ 自动/手动创建会话 → POST /api/sessions
   └─ 发消息 → POST /api/sessions/{id}/chat（数据库，持久化）
   └─ 切换会话 → GET /api/sessions/{id}/messages 加载历史
