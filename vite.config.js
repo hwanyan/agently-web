@@ -7,11 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // 与生产环境 Nginx 的 ^~ /api/agently/ 规则保持一致：去掉 /api/agently 前缀后转发到后端
+      // 与生产环境 Nginx 的 ^~ /api/agently/ 规则保持一致：原样转发到后端
+      // 后端自身已经注册 /api/agently/... 前缀的路由，所以这里不做 rewrite
       '/api/agently': {
         target: 'http://localhost:8081',
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api\/agently/, '')
+        changeOrigin: true
       }
     }
   }

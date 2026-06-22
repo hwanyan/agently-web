@@ -1,7 +1,9 @@
 // 同源相对路径前缀，匹配 Nginx 的 ^~ /api/agently/ 反向代理规则
-// 生产环境：https://www.mild-juan-lab.com/api/agently/api/auth/send-code
-//          → Nginx rewrite 去掉 /api/agently 前缀 → 后端 :8081 收到 /api/auth/send-code
-// 开发环境：由 vite proxy 的 '/api/agently' 规则转发到 http://localhost:8081（同样 rewrite 去前缀）
+// 后端实际注册的路由就带 /api/agently 前缀（如 /api/agently/auth/send-code）
+// 所以 Nginx 不需要 rewrite，原样代理到 127.0.0.1:8081 即可
+// 生产环境：https://www.mild-juan-lab.com/api/agently/auth/send-code
+//          → Nginx 原样代理 → 后端 :8081 收到 /api/agently/auth/send-code
+// 开发环境：vite proxy '/api/agently' 原样转发到 http://localhost:8081
 const BASE_URL = '/api/agently'
 
 // ===== Token 管理 =====
@@ -54,7 +56,7 @@ async function request(url, options = {}) {
  * @param {string} purpose - 用途：register（注册）/ reset_password（重置密码）
  */
 export async function sendCode({ email, purpose = 'register' }) {
-  return request('/api/auth/send-code', {
+  return request('/auth/send-code', {
     method: 'POST',
     body: JSON.stringify({ email, purpose })
   })
@@ -64,7 +66,7 @@ export async function sendCode({ email, purpose = 'register' }) {
  * 用户注册（需先通过 sendCode 获取验证码）
  */
 export async function register({ username, email, password, verify_code, nickname = '' }) {
-  return request('/api/auth/register', {
+  return request('/auth/register', {
     method: 'POST',
     body: JSON.stringify({ username, email, password, verify_code, nickname })
   })
@@ -74,7 +76,7 @@ export async function register({ username, email, password, verify_code, nicknam
  * 用户登录（支持用户名或邮箱）
  */
 export async function login({ username, password }) {
-  return request('/api/auth/login', {
+  return request('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password })
   })
@@ -88,14 +90,14 @@ export async function login({ username, password }) {
 export async function fetchSessions({ agentId = '', limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({ limit, offset })
   if (agentId) params.set('agent_id', agentId)
-  return request(`/api/sessions?${params}`)
+  return request(`/sessions?${params}`)
 }
 
 /**
  * 创建新会话
  */
 export async function createSession({ agentId, title = '' }) {
-  return request('/api/sessions', {
+  return request('/sessions', {
     method: 'POST',
     body: JSON.stringify({ agent_id: agentId, title })
   })
@@ -106,14 +108,14 @@ export async function createSession({ agentId, title = '' }) {
  */
 export async function fetchSessionMessages(sessionId, { limit = 100, offset = 0 } = {}) {
   const params = new URLSearchParams({ limit, offset })
-  return request(`/api/sessions/${sessionId}/messages?${params}`)
+  return request(`/sessions/${sessionId}/messages?${params}`)
 }
 
 /**
  * 归档会话（软删除）
  */
 export async function archiveSession(sessionId) {
-  return request(`/api/sessions/${sessionId}`, { method: 'DELETE' })
+  return request(`/sessions/${sessionId}`, { method: 'DELETE' })
 }
 
 /**
@@ -124,7 +126,7 @@ export function sendSessionMessage(sessionId, message, autoRoute = true, callbac
 
   ;(async () => {
     try {
-      const response = await fetch(`${BASE_URL}/api/sessions/${sessionId}/chat`, {
+      const response = await fetch(`${BASE_URL}/sessions/${sessionId}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -154,11 +156,11 @@ export function sendSessionMessage(sessionId, message, autoRoute = true, callbac
 // ===== Agent 管理（需要 JWT） =====
 
 export async function fetchAgents() {
-  return request('/api/agents')
+  return request('/agents')
 }
 
 export async function switchAgent(agentId) {
-  return request('/api/switch', {
+  return request('/switch', {
     method: 'POST',
     body: JSON.stringify({ agent_id: agentId })
   })
@@ -167,7 +169,7 @@ export async function switchAgent(agentId) {
 // ===== 工具列表（需要 JWT） =====
 
 export async function fetchTools() {
-  return request('/api/tools')
+  return request('/tools')
 }
 
 // ===== SSE 公共解析器 =====
