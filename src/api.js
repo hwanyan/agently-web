@@ -1,4 +1,8 @@
-const BASE_URL = 'http://localhost:8081'
+// 同源相对路径前缀，匹配 Nginx 的 ^~ /api/agently/ 反向代理规则
+// 生产环境：https://www.mild-juan-lab.com/api/agently/api/auth/send-code
+//          → Nginx rewrite 去掉 /api/agently 前缀 → 后端 :8081 收到 /api/auth/send-code
+// 开发环境：由 vite proxy 的 '/api/agently' 规则转发到 http://localhost:8081（同样 rewrite 去前缀）
+const BASE_URL = '/api/agently'
 
 // ===== Token 管理 =====
 export function getToken() {
