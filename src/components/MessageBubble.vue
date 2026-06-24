@@ -25,6 +25,19 @@
             <div class="tool-spinner"></div>
             <span>正在调用工具...</span>
           </div>
+          <!-- 工具单次失败警告（非致命，不打断主流） -->
+          <div v-if="message.toolWarnings && message.toolWarnings.length" class="tool-warnings">
+            <div
+              v-for="(w, idx) in message.toolWarnings"
+              :key="idx"
+              class="tool-warning"
+              :title="w.error"
+            >
+              <span class="warn-icon">⚠️</span>
+              <span class="warn-name">{{ w.tool_name || '工具' }}</span>
+              <span class="warn-text">调用失败：{{ w.error }}</span>
+            </div>
+          </div>
         </div>
         <div class="message-meta">
           <span class="timestamp">{{ formatTime(message.timestamp) }}</span>
@@ -256,4 +269,28 @@ function formatTime(ts) {
   font-size: 14px;
   flex-shrink: 0;
 }
+/* 工具单次失败警告徽章（挂在 AI 气泡下方，不打断主流） */
+.tool-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.tool-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b06800;
+  background: #fff8e6;
+  border: 1px solid #ffe0a3;
+  border-radius: 6px;
+  max-width: 100%;
+  word-break: break-all;
+}
+.tool-warning .warn-icon { flex-shrink: 0; }
+.tool-warning .warn-name { font-weight: 600; }
+.tool-warning .warn-text { color: #8a5200; opacity: 0.9; }
 </style>

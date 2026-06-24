@@ -173,13 +173,17 @@ export async function fetchTools() {
 }
 
 // ===== SSE 公共解析器 =====
+// 一旦遇到 error / done 事件，立即停止后续事件分发并退出读循环，
+// 防止"已经触发错误提示"的同时又有 message/tool_* 事件继续往 UI 灌内容，
+// 导致 UI 状态（已停止流）与实际内容（仍在追加）相互矛盾。
 async function consumeSSE(response, callbacks) {
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let eventType = ''  // 跨 chunk 持久化，空行时重置
+  let aborted = false // 收到 error/done 后置 true，立即终止后续处理
 
-  while (true) {
+  outer: while (!aborted) {
     const { done, value } = await reader.read()
     if (done) break
 
@@ -188,6 +192,7 @@ async function consumeSSE(response, callbacks) {
     buffer = lines.pop() || ''
 
     for (const line of lines) {
+      if (aborted) break outer
       if (line === '') {
         eventType = ''
       } else if (line.startsWith('event: ')) {
@@ -196,15 +201,23 @@ async function consumeSSE(response, callbacks) {
         try {
           const data = JSON.parse(line.slice(6))
           switch (eventType) {
-            case 'route':   callbacks.onRoute?.(data); break
-            case 'message': callbacks.onMessage?.(data.content); break
-            case 'done':    callbacks.onDone?.(); break
-            case 'error':   callbacks.onError?.(data.error || '未知错误'); break
+            case 'route':       callbacks.onRoute?.(data); break
+            case 'message':     callbacks.onMessage?.(data.content); break
+            case 'tool_call':   callbacks.onToolCall?.(data); break
+            case 'tool_result': callbacks.onToolResult?.(data); break
+            case 'tool_error':  callbacks.onToolError?.(data); break
+            case 'done':        aborted = true; callbacks.onDone?.(); break
+            case 'error':       aborted = true; callbacks.onError?.(data.error || '未知错误'); break
           }
         } catch {
           // 忽略 JSON 解析错误
         }
       }
     }
+  }
+
+  // 主动取消底层连接，避免后端继续向已断开的 reader 推送数据
+  if (aborted) {
+    try { await reader.cancel() } catch { /* 已关闭则忽略 */ }
   }
 }

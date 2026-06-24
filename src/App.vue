@@ -634,12 +634,15 @@ async function handleSend() {
   // 添加 AI 占位消息
   messages.value.push({
     role: 'assistant', content: '', streaming: true, routeInfo: null,
+    toolWarnings: [],
     timestamp: new Date().toISOString()
   })
   isStreaming.value = true
   scrollToBottom()
 
   const getAiMsg = () => messages.value[messages.value.length - 1]
+  // 已发生致命错误标志位：避免后续 onMessage 继续往气泡里写内容
+  let fatalErrored = false
 
   const callbacks = {
     onRoute(data) {
@@ -651,7 +654,24 @@ async function handleSend() {
       }
     },
     onMessage(content) {
+      if (fatalErrored) return
       getAiMsg().content += content
+      scrollToBottom(false)
+    },
+    onToolCall(data) {
+      // 工具调用开始：可在此记录调用中状态（暂只忽略，不影响主流）
+    },
+    onToolResult(data) {
+      // 工具调用成功：暂不在 UI 单独展示
+    },
+    onToolError(data) {
+      // 工具单次失败：作为非致命警告挂到当前 AI 气泡，不打断流式输出
+      const ai = getAiMsg()
+      if (!ai.toolWarnings) ai.toolWarnings = []
+      ai.toolWarnings.push({
+        tool_name: data.tool_name || '',
+        error: data.error || '工具调用失败',
+      })
       scrollToBottom(false)
     },
     onDone() {
@@ -663,9 +683,14 @@ async function handleSend() {
       loadSessions()
     },
     onError(err) {
+      // 致命错误：阻断后续 onMessage 写入，关闭流式状态
+      if (fatalErrored) return
+      fatalErrored = true
       getAiMsg().streaming = false
-      messages.value.push({ role: 'error', content: err, timestamp: new Date().toISOString() })
+      messages.value.push({ role: 'error', content: err || '未知错误', timestamp: new Date().toISOString() })
       isStreaming.value = false
+      // 主动取消上游 SSE，避免后端继续推送被丢弃的数据
+      currentController?.abort()
       currentController = null
       scrollToBottom()
     }
