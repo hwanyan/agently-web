@@ -382,20 +382,19 @@ function getAgentDotColor(id) { return agentColorMap[id] || '#06b6d4' }
 function getAgentShortName(id) { return agentShortNameMap[id] || id }
 
 // ===== 认证 =====
-function handleAuthSuccess(user) {
+async function handleAuthSuccess(user) {
   currentUser.value = user
   showAuthModal.value = false
   showToast(`欢迎，${user.nickname || user.username}！`, 'success')
-  // 登录成功后加载 agents 和会话列表
-  loadAgents().then(() => {
-    loadSessions()
-    // 执行登录前用户想进行的操作
-    if (pendingAction.value) {
-      const action = pendingAction.value
-      pendingAction.value = null
-      action()
-    }
-  })
+  // 登录成功后串行加载 agents 和会话列表，确保后续 pendingAction 能拿到完整数据
+  await loadAgents()
+  await loadSessions()
+  // 执行登录前用户想进行的操作
+  if (pendingAction.value) {
+    const action = pendingAction.value
+    pendingAction.value = null
+    action()
+  }
 }
 
 function handleLogout() {
@@ -601,17 +600,29 @@ async function handleSend() {
 
   // 没有活跃会话时自动创建一个
   if (!activeSession.value) {
-    const defaultAgent = agents.value.find(a => a.registered)
-    if (defaultAgent) {
-      try {
-        const data = await createSession({ agentId: defaultAgent.id })
-        activeSession.value = data.session
-        sessions.value.unshift(data.session)
-      } catch {
-        showToast('创建会话失败，请重试', 'error')
-        return
-      }
+    // agents 可能尚未加载完，或后端返回为空，先兜底加载一次
+    if (agents.value.length === 0) {
+      await loadAgents()
     }
+    const defaultAgent = agents.value.find(a => a.registered) || agents.value[0]
+    if (!defaultAgent) {
+      showToast('暂无可用 Agent，请稍后重试', 'error')
+      return
+    }
+    try {
+      const data = await createSession({ agentId: defaultAgent.id })
+      activeSession.value = data.session
+      sessions.value.unshift(data.session)
+    } catch {
+      showToast('创建会话失败，请重试', 'error')
+      return
+    }
+  }
+
+  // 兜底防御：理论上不会再为 null，万一还是 null 直接拒绝发送，避免读取 .id 崩溃
+  if (!activeSession.value) {
+    showToast('会话未就绪，请重试', 'error')
+    return
   }
 
   // 添加用户消息

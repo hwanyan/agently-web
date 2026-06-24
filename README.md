@@ -59,7 +59,7 @@
 | **邮箱验证码** | 注册时需先发送验证码到邮箱，60 秒倒计时防重复发送 |
 | **登录** | 支持用户名或邮箱登录（含 `@` 自动识别为邮箱） |
 | **强制登录** | 未登录时可浏览主界面，实际使用功能（发送消息、选择 Agent、查看工具）时才弹出登录框 |
-| **登录后继续** | 登录成功后自动执行登录前用户想进行的操作 |
+| **登录后继续** | 登录成功后**串行加载** Agent 列表与会话列表，全部就绪后再执行登录前用户想进行的操作（避免数据未就绪导致的空指针） |
 | **持久登录** | Token 存入 `localStorage`，刷新页面自动恢复登录态 |
 | **退出登录** | 清除 Token 和用户信息，回到未登录主界面 |
 
@@ -72,7 +72,7 @@
 | **切换会话** | 点击侧边栏条目，自动加载该会话的历史消息 |
 | **按 Agent 过滤** | 侧边栏顶部标签页，按 Agent 类型筛选会话 |
 | **归档会话** | 悬停会话条目显示归档按钮，软删除（数据保留） |
-| **自动创建会话** | 登录后发送第一条消息时，若无活跃会话则自动创建 |
+| **自动创建会话** | 登录后发送第一条消息时，若无活跃会话则自动创建；若 Agent 列表为空会先兜底拉取，仍然取不到 Agent 时给出 Toast 提示并中止发送，避免空指针错误 |
 | **消息持久化** | 对话记录存入数据库，重启服务/刷新页面后可恢复 |
 
 ### 对话交互
@@ -169,13 +169,15 @@ npm run build
 
 前端通过 [`src/api.js`](src/api.js) 封装了以下接口：
 
+> 所有接口均使用统一前缀 **`/api/agently`**（与 Nginx `^~ /api/agently/` 反向代理规则、后端注册路由保持一致）。
+
 ### 用户认证（无需鉴权）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/auth/send-code` | 发送邮箱验证码（支持 `register` / `reset_password` 用途） |
-| `POST` | `/api/auth/register` | 用户注册（需携带邮箱验证码），返回 JWT Token |
-| `POST` | `/api/auth/login` | 用户登录（用户名或邮箱），返回 JWT Token |
+| `POST` | `/api/agently/auth/send-code` | 发送邮箱验证码（支持 `register` / `reset_password` 用途） |
+| `POST` | `/api/agently/auth/register` | 用户注册（需携带邮箱验证码），返回 JWT Token |
+| `POST` | `/api/agently/auth/login` | 用户登录（用户名或邮箱），返回 JWT Token |
 
 ### 会话管理（需要 JWT）
 
@@ -183,24 +185,24 @@ npm run build
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/sessions` | 查询当前用户的会话列表（支持按 Agent 过滤） |
-| `POST` | `/api/sessions` | 创建新会话（绑定指定 Agent） |
-| `GET` | `/api/sessions/{id}/messages` | 查询会话消息历史 |
-| `POST` | `/api/sessions/{id}/chat` | 在会话中发送消息，SSE 流式回答（**持久化**） |
-| `DELETE` | `/api/sessions/{id}` | 归档会话（软删除，数据保留） |
+| `GET` | `/api/agently/sessions` | 查询当前用户的会话列表（支持按 Agent 过滤） |
+| `POST` | `/api/agently/sessions` | 创建新会话（绑定指定 Agent） |
+| `GET` | `/api/agently/sessions/{id}/messages` | 查询会话消息历史 |
+| `POST` | `/api/agently/sessions/{id}/chat` | 在会话中发送消息，SSE 流式回答（**持久化**） |
+| `DELETE` | `/api/agently/sessions/{id}` | 归档会话（软删除，数据保留） |
 
 ### Agent 管理（需要 JWT）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/agents` | 获取可用 Agent 列表 |
-| `POST` | `/api/switch` | 切换当前激活的 Agent |
+| `GET` | `/api/agently/agents` | 获取可用 Agent 列表 |
+| `POST` | `/api/agently/switch` | 切换当前激活的 Agent |
 
 ### 工具列表（需要 JWT）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/tools` | 获取当前 Agent 的工具列表 |
+| `GET` | `/api/agently/tools` | 获取当前 Agent 的工具列表 |
 
 完整接口文档见 [`API_DOC.yaml`](API_DOC.yaml)。
 
@@ -212,20 +214,24 @@ npm run build
 未登录
   └─ 展示主界面（欢迎屏 + 快捷建议）
   └─ 尝试使用功能 → 弹出登录框
-  └─ 登录/注册成功 → 获取 JWT Token → 自动执行原操作
+  └─ 登录/注册成功 → 获取 JWT Token → 串行加载数据 → 自动执行原操作
 
-登录后
-  └─ 加载 Agent 列表 → GET /api/agents
-  └─ 加载会话列表 → GET /api/sessions
+登录后（串行加载，避免空指针）
+  └─ 加载 Agent 列表 → GET /api/agently/agents
+  └─ 加载会话列表 → GET /api/agently/sessions
+  └─ 全部 await 完成后，再触发登录前缓存的 pendingAction
 
 注册流程
-  └─ 输入邮箱 → 点击「发送验证码」→ POST /api/auth/send-code
-  └─ 输入验证码 + 用户名/密码 → POST /api/auth/register
+  └─ 输入邮箱 → 点击「发送验证码」→ POST /api/agently/auth/send-code
+  └─ 输入验证码 + 用户名/密码 → POST /api/agently/auth/register
   └─ 注册成功 → 获取 JWT Token → 自动登录
-  └─ 自动/手动创建会话 → POST /api/sessions
-  └─ 发消息 → POST /api/sessions/{id}/chat（数据库，持久化）
-  └─ 切换会话 → GET /api/sessions/{id}/messages 加载历史
-  └─ 归档会话 → DELETE /api/sessions/{id}
+  └─ await 加载 agents / sessions（保证 pendingAction 拿到完整数据）
+  └─ 自动/手动创建会话 → POST /api/agently/sessions
+        ├─ 若 agents 为空：兜底再 await loadAgents()
+        └─ 若仍无可用 Agent：Toast 提示并中止发送（不再读取 null.id）
+  └─ 发消息 → POST /api/agently/sessions/{id}/chat（数据库，持久化）
+  └─ 切换会话 → GET /api/agently/sessions/{id}/messages 加载历史
+  └─ 归档会话 → DELETE /api/agently/sessions/{id}
   └─ 退出登录 → 清除 Token，重新弹出登录框
 ```
 
