@@ -299,7 +299,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import MessageBubble from './components/MessageBubble.vue'
 import AgentPanel from './components/AgentPanel.vue'
 import AuthModal from './components/AuthModal.vue'
@@ -307,7 +307,7 @@ import SessionSidebar from './components/SessionSidebar.vue'
 import {
   fetchAgents, switchAgent, fetchTools,
   fetchSessions, createSession, fetchSessionMessages, archiveSession, sendSessionMessage,
-  getStoredUser, removeToken, removeStoredUser
+  getStoredUser, removeToken, removeStoredUser, isTokenExpired, getToken
 } from './api.js'
 
 // ===== 用户状态 =====
@@ -406,6 +406,26 @@ function handleLogout() {
   messages.value = []
   agents.value = []
   showToast('已退出登录', 'info')
+}
+
+// 凭证失效（token 过期 / 401 / 403）统一收收尾：
+// 清空 UI 上的用户与会话信息，中断进行中的流式请求，弹出登录框
+function handleAuthExpired() {
+  if (!currentUser.value) return  // 已是未登录态，避免重复提示
+  if (currentController) {
+    try { currentController.abort() } catch { /* ignore */ }
+    currentController = null
+  }
+  isStreaming.value = false
+  currentUser.value = null
+  sessions.value = []
+  activeSession.value = null
+  messages.value = []
+  agents.value = []
+  activeAgent.value = null
+  tools.value = []
+  showToast('登录已过期，请重新登录', 'info')
+  showAuthModal.value = true
 }
 
 // ===== 会话管理 =====
@@ -701,13 +721,33 @@ async function handleSend() {
 }
 
 // ===== 生命周期 =====
+function onAuthExpiredEvent() { handleAuthExpired() }
+function onVisibilityChange() {
+  // 页面从后台切回时，如果仅本地 token 已过期（还未发生过任何请求），
+  // 主动触发一次凭证清理，避免左上角继续展示旧用户信息
+  if (document.visibilityState === 'visible' && currentUser.value) {
+    const token = getToken()  // 内部已含过期判断，过期会发 agently:auth-expired
+    if (!token || isTokenExpired(token)) {
+      handleAuthExpired()
+    }
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('agently:auth-expired', onAuthExpiredEvent)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+
   // 已登录：静默加载数据
   if (currentUser.value) {
     await loadAgents()
     await loadSessions()
   }
   // 未登录：直接展示主界面，不弹框
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('agently:auth-expired', onAuthExpiredEvent)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 watch(autoRoute, (val) => {

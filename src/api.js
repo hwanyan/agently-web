@@ -7,8 +7,49 @@
 const BASE_URL = '/api/agently'
 
 // ===== Token 管理 =====
+// JWT 解析工具：从 token 中提取过期时间戳（秒）。失败返回 0
+function parseJwtExp(token) {
+  if (!token || typeof token !== 'string') return 0
+  const parts = token.split('.')
+  if (parts.length !== 3) return 0
+  try {
+    // base64url → base64
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64 + '==='.slice((base64.length + 3) % 4)
+    const json = decodeURIComponent(
+      atob(padded).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
+    )
+    const payload = JSON.parse(json)
+    return typeof payload.exp === 'number' ? payload.exp : 0
+  } catch {
+    return 0
+  }
+}
+
+// 判断指定 token 是否已过期（含 30 秒安全提前量）。无 exp 字段视为不会过期
+export function isTokenExpired(token) {
+  const exp = parseJwtExp(token)
+  if (!exp) return false
+  return Date.now() >= (exp - 30) * 1000
+}
+
+// 派发全局事件 + 清理本地凭证。供 401/403 与过期检测共用
+export function dispatchAuthExpired(reason = 'expired') {
+  removeToken()
+  removeStoredUser()
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('agently:auth-expired', { detail: { reason } }))
+  }
+}
+
 export function getToken() {
-  return localStorage.getItem('agently_token') || ''
+  const token = localStorage.getItem('agently_token') || ''
+  // token 已过期：直接清理，避免后续请求带着无效 Authorization 浪费往返
+  if (token && isTokenExpired(token)) {
+    dispatchAuthExpired('expired')
+    return ''
+  }
+  return token
 }
 export function setToken(token) {
   localStorage.setItem('agently_token', token)
@@ -16,7 +57,16 @@ export function setToken(token) {
 export function removeToken() {
   localStorage.removeItem('agently_token')
 }
+// 读取本地用户信息：仅当 token 仍然有效时才返回，否则同步清理 localStorage
+// 解决场景：用户登录后超过 JWT 有效期再回到页面时，左上角仍展示旧用户名/头像，造成信息泄露
 export function getStoredUser() {
+  const token = localStorage.getItem('agently_token') || ''
+  if (!token || isTokenExpired(token)) {
+    // 静默清理，不派发事件（onMounted 阶段尚无监听者，且本就是未登录态）
+    removeToken()
+    removeStoredUser()
+    return null
+  }
   try {
     return JSON.parse(localStorage.getItem('agently_user') || 'null')
   } catch { return null }
@@ -44,6 +94,10 @@ async function request(url, options = {}) {
     }
   })
   const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }))
+  // 401/403：服务端判定凭证失效，统一清理本地态并广播事件
+  if (res.status === 401 || res.status === 403) {
+    dispatchAuthExpired('unauthorized')
+  }
   if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`)
   return data
 }
@@ -138,6 +192,9 @@ export function sendSessionMessage(sessionId, message, autoRoute = true, callbac
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({ message: `HTTP ${response.status}` }))
+        if (response.status === 401 || response.status === 403) {
+          dispatchAuthExpired('unauthorized')
+        }
         callbacks.onError?.(err.message || '请求失败')
         return
       }
