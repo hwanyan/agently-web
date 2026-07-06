@@ -1,6 +1,6 @@
-# Agently Vue
+# Agently Web
 
-基于 Vue 3 + Vite 构建的多 Agent 智能问答前端界面，对接 Agent-Hwan 后端服务（`http://localhost:8081`）。
+基于 Vue 3 + Vite 构建的多 Agent 智能问答前端界面，对接 agently 后端服务（`http://localhost:8090`）。
 
 支持**用户注册/登录**、**持久化会话管理**、流式对话、多 Agent 切换、自动意图路由等功能。
 
@@ -169,15 +169,15 @@ npm run build
 
 前端通过 [`src/api.js`](src/api.js) 封装了以下接口：
 
-> 所有接口均使用统一前缀 **`/api/agently`**（与 Nginx `^~ /api/agently/` 反向代理规则、后端注册路由保持一致）。
+> 所有接口均使用统一前缀 **`/api/agently/v1`**（与 Nginx `^~ /api/agently/` 反向代理规则匹配，后端使用 grpc-gateway 暴露原生 `/v1/...` 路由）。
 
 ### 用户认证（无需鉴权）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/agently/auth/send-code` | 发送邮箱验证码（支持 `register` / `reset_password` 用途） |
-| `POST` | `/api/agently/auth/register` | 用户注册（需携带邮箱验证码），返回 JWT Token |
-| `POST` | `/api/agently/auth/login` | 用户登录（用户名或邮箱），返回 JWT Token |
+| `POST` | `/api/agently/v1/auth:sendVerifyCode` | 发送邮箱验证码（支持 `register` / `reset_password` 用途） |
+| `POST` | `/api/agently/v1/auth:register` | 用户注册（需携带邮箱验证码），返回 JWT Token |
+| `POST` | `/api/agently/v1/auth:login` | 用户登录（用户名或邮箱），返回 JWT Token |
 
 ### 会话管理（需要 JWT）
 
@@ -185,24 +185,24 @@ npm run build
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/agently/sessions` | 查询当前用户的会话列表（支持按 Agent 过滤） |
-| `POST` | `/api/agently/sessions` | 创建新会话（绑定指定 Agent） |
-| `GET` | `/api/agently/sessions/{id}/messages` | 查询会话消息历史 |
-| `POST` | `/api/agently/sessions/{id}/chat` | 在会话中发送消息，SSE 流式回答（**持久化**） |
-| `DELETE` | `/api/agently/sessions/{id}` | 归档会话（软删除，数据保留） |
+| `GET` | `/api/agently/v1/sessions` | 查询当前用户的会话列表（支持按 Agent 过滤） |
+| `POST` | `/api/agently/v1/sessions` | 创建新会话（绑定指定 Agent） |
+| `GET` | `/api/agently/v1/sessions/{id}/messages` | 查询会话消息历史 |
+| `POST` | `/api/agently/v1/sessions/{id}:chat` | 在会话中发送消息，SSE 流式回答（**持久化**） |
+| `POST` | `/api/agently/v1/sessions/{id}:archive` | 归档会话（软删除，数据保留；body 为空对象 `{}`） |
 
 ### Agent 管理（需要 JWT）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/agently/agents` | 获取可用 Agent 列表 |
-| `POST` | `/api/agently/switch` | 切换当前激活的 Agent |
+| `GET` | `/api/agently/v1/agents` | 获取可用 Agent 列表 |
+| `POST` | `/api/agently/v1/agents:switch` | 切换当前激活的 Agent |
 
 ### 工具列表（需要 JWT）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/agently/tools` | 获取当前 Agent 的工具列表 |
+| `GET` | `/api/agently/v1/tools` | 获取当前 Agent 的工具列表 |
 
 完整接口文档见 [`API_DOC.yaml`](API_DOC.yaml)。
 
@@ -217,21 +217,21 @@ npm run build
   └─ 登录/注册成功 → 获取 JWT Token → 串行加载数据 → 自动执行原操作
 
 登录后（串行加载，避免空指针）
-  └─ 加载 Agent 列表 → GET /api/agently/agents
-  └─ 加载会话列表 → GET /api/agently/sessions
+  └─ 加载 Agent 列表 → GET /api/agently/v1/agents
+  └─ 加载会话列表 → GET /api/agently/v1/sessions
   └─ 全部 await 完成后，再触发登录前缓存的 pendingAction
 
 注册流程
-  └─ 输入邮箱 → 点击「发送验证码」→ POST /api/agently/auth/send-code
-  └─ 输入验证码 + 用户名/密码 → POST /api/agently/auth/register
+  └─ 输入邮箱 → 点击「发送验证码」→ POST /api/agently/v1/auth:sendVerifyCode
+  └─ 输入验证码 + 用户名/密码 → POST /api/agently/v1/auth:register
   └─ 注册成功 → 获取 JWT Token → 自动登录
   └─ await 加载 agents / sessions（保证 pendingAction 拿到完整数据）
-  └─ 自动/手动创建会话 → POST /api/agently/sessions
+  └─ 自动/手动创建会话 → POST /api/agently/v1/sessions
         ├─ 若 agents 为空：兜底再 await loadAgents()
         └─ 若仍无可用 Agent：Toast 提示并中止发送（不再读取 null.id）
-  └─ 发消息 → POST /api/agently/sessions/{id}/chat（数据库，持久化）
-  └─ 切换会话 → GET /api/agently/sessions/{id}/messages 加载历史
-  └─ 归档会话 → DELETE /api/agently/sessions/{id}
+  └─ 发消息 → POST /api/agently/v1/sessions/{id}:chat（数据库，持久化）
+  └─ 切换会话 → GET /api/agently/v1/sessions/{id}/messages 加载历史
+  └─ 归档会话 → POST /api/agently/v1/sessions/{id}:archive
   └─ 退出登录 → 清除 Token，重新弹出登录框
 ```
 

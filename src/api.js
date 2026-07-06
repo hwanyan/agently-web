@@ -1,10 +1,12 @@
 // 同源相对路径前缀，匹配 Nginx 的 ^~ /api/agently/ 反向代理规则
-// 后端实际注册的路由就带 /api/agently 前缀（如 /api/agently/auth/send-code）
-// 所以 Nginx 不需要 rewrite，原样代理到 127.0.0.1:8081 即可
-// 生产环境：https://www.mild-juan-lab.com/api/agently/auth/send-code
-//          → Nginx 原样代理 → 后端 :8081 收到 /api/agently/auth/send-code
-// 开发环境：vite proxy '/api/agently' 原样转发到 http://localhost:8081
-const BASE_URL = '/api/agently'
+// 后端已切换为 gRPC + grpc-gateway，原生路由前缀为 /v1/（详见 pb/gen/agently.swagger.json）。
+// Nginx / Vite 代理均通过 rewrite 把浏览器可见的 /api/agently/ 前缀剥离，
+// 让后端只感知 /v1/xxx 原生路径：
+//   浏览器: /api/agently/v1/auth:login
+//   → Nginx (proxy_pass http://agently_backend/;) 剥掉 /api/agently/
+//   → 后端 :8081 收到 /v1/auth:login
+// 开发环境：vite proxy '/api/agently' + rewrite('' 剥前缀) → http://localhost:8081/v1/...
+const BASE_URL = '/api/agently/v1'
 
 // ===== Token 管理 =====
 // JWT 解析工具：从 token 中提取过期时间戳（秒）。失败返回 0
@@ -110,7 +112,7 @@ async function request(url, options = {}) {
  * @param {string} purpose - 用途：register（注册）/ reset_password（重置密码）
  */
 export async function sendCode({ email, purpose = 'register' }) {
-  return request('/auth/send-code', {
+  return request('/auth:sendVerifyCode', {
     method: 'POST',
     body: JSON.stringify({ email, purpose })
   })
@@ -120,7 +122,7 @@ export async function sendCode({ email, purpose = 'register' }) {
  * 用户注册（需先通过 sendCode 获取验证码）
  */
 export async function register({ username, email, password, verify_code, nickname = '' }) {
-  return request('/auth/register', {
+  return request('/auth:register', {
     method: 'POST',
     body: JSON.stringify({ username, email, password, verify_code, nickname })
   })
@@ -130,7 +132,7 @@ export async function register({ username, email, password, verify_code, nicknam
  * 用户登录（支持用户名或邮箱）
  */
 export async function login({ username, password }) {
-  return request('/auth/login', {
+  return request('/auth:login', {
     method: 'POST',
     body: JSON.stringify({ username, password })
   })
@@ -167,9 +169,13 @@ export async function fetchSessionMessages(sessionId, { limit = 100, offset = 0 
 
 /**
  * 归档会话（软删除）
+ * grpc-gateway 动作型接口：POST /sessions/{id}:archive，body 需为空对象
  */
 export async function archiveSession(sessionId) {
-  return request(`/sessions/${sessionId}`, { method: 'DELETE' })
+  return request(`/sessions/${sessionId}:archive`, {
+    method: 'POST',
+    body: '{}'
+  })
 }
 
 /**
@@ -180,7 +186,7 @@ export function sendSessionMessage(sessionId, message, autoRoute = true, callbac
 
   ;(async () => {
     try {
-      const response = await fetch(`${BASE_URL}/sessions/${sessionId}/chat`, {
+      const response = await fetch(`${BASE_URL}/sessions/${sessionId}:chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -217,7 +223,7 @@ export async function fetchAgents() {
 }
 
 export async function switchAgent(agentId) {
-  return request('/switch', {
+  return request('/agents:switch', {
     method: 'POST',
     body: JSON.stringify({ agent_id: agentId })
   })
