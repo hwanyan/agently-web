@@ -127,7 +127,7 @@
 
 <script setup>
 import { ref, reactive, watch } from 'vue'
-import { login, register, sendCode, setToken, setStoredUser } from '../api.js'
+import { login, register, sendCode, setTokens, setStoredUser } from '../api.js'
 
 const props = defineProps({
   visible: Boolean
@@ -262,7 +262,7 @@ async function handleSubmit() {
         nickname: form.nickname
       })
     }
-    setToken(data.token)
+    setTokens(data.token, data.refresh_token)
     setStoredUser(data.user)
     emit('success', data.user)
   } catch (e) {

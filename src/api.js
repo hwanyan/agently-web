@@ -35,7 +35,12 @@ export function isTokenExpired(token) {
   return Date.now() >= (exp - 30) * 1000
 }
 
-// 派发全局事件 + 清理本地凭证。供 401/403 与过期检测共用
+// 令牌模型：
+//   - Access Token（agently_token）：短寿命 JWT（默认 15 分钟），每个请求都带；过期后自动用 Refresh Token 换新；
+//   - Refresh Token（agently_refresh_token）：长寿命，只用于换取新令牌；每次使用都会轮换，必须及时写回。
+// 「是否已登录」以 Refresh Token 是否存在为准：Access Token 过期只代表需要刷新，不代表登录失效。
+
+// 派发全局事件 + 清理本地凭证。登录态确实失效（刷新失败 / 刷新令牌被拒）时调用
 export function dispatchAuthExpired(reason = 'expired') {
   removeToken()
   removeStoredUser()
@@ -45,25 +50,29 @@ export function dispatchAuthExpired(reason = 'expired') {
 }
 
 export function getToken() {
-  const token = localStorage.getItem('agently_token') || ''
-  // token 已过期：直接清理，避免后续请求带着无效 Authorization 浪费往返
-  if (token && isTokenExpired(token)) {
-    dispatchAuthExpired('expired')
-    return ''
-  }
-  return token
+  return localStorage.getItem('agently_token') || ''
 }
-export function setToken(token) {
-  localStorage.setItem('agently_token', token)
+export function getRefreshToken() {
+  return localStorage.getItem('agently_refresh_token') || ''
 }
+// 是否持有登录态（有 Refresh Token 即视为已登录，Access Token 过期会自动刷新）
+export function hasSession() {
+  return !!getRefreshToken()
+}
+// 同时写入 Access Token 与 Refresh Token（登录 / 注册 / 刷新成功后调用）
+export function setTokens(accessToken, refreshToken) {
+  localStorage.setItem('agently_token', accessToken)
+  localStorage.setItem('agently_refresh_token', refreshToken)
+}
+// 清除全部令牌
 export function removeToken() {
   localStorage.removeItem('agently_token')
+  localStorage.removeItem('agently_refresh_token')
 }
-// 读取本地用户信息：仅当 token 仍然有效时才返回，否则同步清理 localStorage
-// 解决场景：用户登录后超过 JWT 有效期再回到页面时，左上角仍展示旧用户名/头像，造成信息泄露
+// 读取本地用户信息：仅当持有登录态时才返回，否则同步清理 localStorage
+// 解决场景：登录失效后再回到页面时，左上角仍展示旧用户名/头像，造成信息泄露
 export function getStoredUser() {
-  const token = localStorage.getItem('agently_token') || ''
-  if (!token || isTokenExpired(token)) {
+  if (!hasSession()) {
     // 静默清理，不派发事件（onMounted 阶段尚无监听者，且本就是未登录态）
     removeToken()
     removeStoredUser()
@@ -80,25 +89,100 @@ export function removeStoredUser() {
   localStorage.removeItem('agently_user')
 }
 
-// ===== 通用请求工具 =====
-function authHeaders() {
-  const token = getToken()
-  return token ? { 'Authorization': `Bearer ${token}` } : {}
+// ===== Access Token 自动刷新 =====
+//
+// Access Token 过期后业务接口返回 401。此时用 Refresh Token 换一对新令牌并重试原请求，用户无感知；
+// 只有刷新也失败（Refresh Token 过期 / 被吊销 / 账号被禁用）才广播 auth-expired 回到登录。
+//
+// 两层互斥，缺一不可：
+//   1. 同一标签页内，多个并发请求同时 401，只发一次刷新（inflightRefresh 合并）；
+//   2. 多个标签页之间，用 Web Locks 串行化，并在拿到锁后先看 localStorage 里的 token 是否已被其它标签页换新。
+// Refresh Token 每次使用都会轮换，两个标签页拿同一个旧的 Refresh Token 去刷新，后到者会被服务端当成重放，
+// 整条登录链路被吊销、用户被迫重新登录——这正是需要互斥的原因。
+let inflightRefresh = null
+
+function refreshSession(usedToken) {
+  if (!inflightRefresh) {
+    inflightRefresh = runExclusive(() => doRefresh(usedToken)).finally(() => { inflightRefresh = null })
+  }
+  return inflightRefresh
 }
 
-async function request(url, options = {}) {
-  const res = await fetch(`${BASE_URL}${url}`, {
+async function runExclusive(fn) {
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return await navigator.locks.request('agently-auth-refresh', fn)
+  }
+  return fn()
+}
+
+async function doRefresh(usedToken) {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) return false
+  // 等锁期间别的标签页（或别的请求）已经换过新 token：直接用它重试，不要再拿旧 Refresh Token 去刷新
+  const current = getToken()
+  if (usedToken && current && current !== usedToken) return true
+
+  try {
+    const res = await fetch(`${BASE_URL}/auth:refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    })
+    if (res.ok) {
+      const data = await res.json()
+      setTokens(data.token, data.refresh_token)
+      if (data.user) setStoredUser(data.user)
+      return true
+    }
+    // 401/403：Refresh Token 已失效或账号被禁用，登录态无法挽回
+    if (res.status === 401 || res.status === 403) dispatchAuthExpired('unauthorized')
+    // 其它（如 503 认证服务暂不可用）：保留登录态，下次请求再试，避免服务抖动把用户踢下线
+    return false
+  } catch {
+    return false // 网络错误：同上，保留登录态
+  }
+}
+
+// 带登录态的 fetch：Access Token 已过期则先刷新；遇到 401 刷新并重试一次。
+// 401 发生在服务端处理之前（鉴权层），因此重试不会造成非幂等请求被重复执行。
+async function authedFetch(url, options = {}) {
+  const send = (token) => fetch(`${BASE_URL}${url}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       ...(options.headers || {})
     }
   })
+
+  // 注册 / 登录 / 发验证码 / 刷新 / 登出（/auth:xxx）的 401 是「账号、验证码或令牌无效」之类的业务失败，
+  // 不代表需要刷新登录态，直接发送即可
+  if (url.startsWith('/auth:')) return send(getToken())
+
+  let usedToken = getToken()
+  // 本地就能判断已过期：先刷新，省掉一次必然失败的往返
+  if (usedToken && isTokenExpired(usedToken) && hasSession()) {
+    if (await refreshSession(usedToken)) usedToken = getToken()
+  }
+
+  let res = await send(usedToken)
+  if (res.status !== 401 || !hasSession()) return res
+
+  if (await refreshSession(usedToken)) {
+    res = await send(getToken())
+    // 换了新令牌仍然 401：登录态确实无效
+    if (res.status === 401) dispatchAuthExpired('unauthorized')
+  }
+  return res
+}
+
+// ===== 通用请求工具 =====
+async function request(url, options = {}) {
+  const res = await authedFetch(url, options)
   const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }))
-  // 401/403：服务端判定凭证失效，统一清理本地态并广播事件
-  if (res.status === 401 || res.status === 403) {
-    dispatchAuthExpired('unauthorized')
+  // 403：账号被禁用等，登录态无法继续使用，统一清理本地态并广播事件
+  if (res.status === 403 && hasSession()) {
+    dispatchAuthExpired('forbidden')
   }
   if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`)
   return data
@@ -136,6 +220,27 @@ export async function login({ username, password }) {
     method: 'POST',
     body: JSON.stringify({ username, password })
   })
+}
+
+/**
+ * 登出：通知服务端吊销当前登录链路（其 Refresh Token 立即全部失效，无法再刷新）
+ *
+ * 约定：
+ * - 必须在清理本地凭证【之前】调用（函数同步读取 token，之后调用方可立即清理本地态）
+ * - 不走通用 request()：它会在 401/403 时触发刷新或广播 auth-expired，而登出场景下 Access Token 已过期是正常情况
+ *   （服务端只要求签名有效，允许已过期）
+ * - 失败（网络错误等）不影响本地登出，故吞掉错误；服务端 Refresh Token 最终会按空闲时间自然过期
+ */
+export async function logout() {
+  const token = localStorage.getItem('agently_token') || ''
+  if (!token) return
+  try {
+    await fetch(`${BASE_URL}/auth:logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: '{}'
+    })
+  } catch { /* 忽略：本地登出照常进行 */ }
 }
 
 // ===== 会话管理 =====
@@ -186,20 +291,17 @@ export function sendSessionMessage(sessionId, message, autoRoute = true, callbac
 
   ;(async () => {
     try {
-      const response = await fetch(`${BASE_URL}/sessions/${sessionId}:chat`, {
+      // 走 authedFetch：Access Token 过期时自动刷新并重试（401 发生在流开始之前，重试安全）
+      const response = await authedFetch(`/sessions/${sessionId}:chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
         body: JSON.stringify({ message, auto_route: autoRoute }),
         signal: controller.signal
       })
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({ message: `HTTP ${response.status}` }))
-        if (response.status === 401 || response.status === 403) {
-          dispatchAuthExpired('unauthorized')
+        if (response.status === 403 && hasSession()) {
+          dispatchAuthExpired('forbidden')
         }
         callbacks.onError?.(err.message || '请求失败')
         return

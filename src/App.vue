@@ -307,7 +307,7 @@ import SessionSidebar from './components/SessionSidebar.vue'
 import {
   fetchAgents, switchAgent, fetchTools,
   fetchSessions, createSession, fetchSessionMessages, archiveSession, sendSessionMessage,
-  getStoredUser, removeToken, removeStoredUser, isTokenExpired, getToken
+  getStoredUser, removeToken, removeStoredUser, hasSession, logout
 } from './api.js'
 
 // ===== 用户状态 =====
@@ -398,6 +398,8 @@ async function handleAuthSuccess(user) {
 }
 
 function handleLogout() {
+  // 先通知服务端吊销 token（不等待结果；logout() 会同步读取 token，之后即可放心清理本地态）
+  logout()
   removeToken()
   removeStoredUser()
   currentUser.value = null
@@ -723,13 +725,11 @@ async function handleSend() {
 // ===== 生命周期 =====
 function onAuthExpiredEvent() { handleAuthExpired() }
 function onVisibilityChange() {
-  // 页面从后台切回时，如果仅本地 token 已过期（还未发生过任何请求），
-  // 主动触发一次凭证清理，避免左上角继续展示旧用户信息
-  if (document.visibilityState === 'visible' && currentUser.value) {
-    const token = getToken()  // 内部已含过期判断，过期会发 agently:auth-expired
-    if (!token || isTokenExpired(token)) {
-      handleAuthExpired()
-    }
+  // 页面从后台切回时，如果登录态已被其它标签页清除（登出 / 刷新失败），
+  // 同步清掉本页的用户信息，避免左上角继续展示旧用户。
+  // 注意：Access Token 过期不算登录失效，下一次请求会自动用 Refresh Token 换新。
+  if (document.visibilityState === 'visible' && currentUser.value && !hasSession()) {
+    handleAuthExpired()
   }
 }
 
